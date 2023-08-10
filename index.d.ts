@@ -1,21 +1,16 @@
-declare const widestLine: {
-	/**
-	Get the visual width of the widest line in a string - the number of columns required to display it.
+/**
+Generate a unique random string.
 
-	@example
-	```
-	import widestLine = require('widest-line');
+@returns A 32 character unique string. Matches the length of MD5, which is [unique enough](https://stackoverflow.com/a/2444336/64949) for non-crypto purposes.
 
-	widestLine('古\n\u001B[1m@\u001B[22m');
-	//=> 2
-	```
-	*/
-	(input: string): number;
+@example
+```
+import uniqueString = require('unique-string');
 
-	// TODO: remove this in the next major version, refactor definition to:
-	// declare function widestLine(input: string): number;
-	// export = widestLine;
-	default: typeof widestLine;
-};
+uniqueString();
+//=> 'b4de2a49c8ffa3fbee04446f045483b2'
+```
+*/
+declare function uniqueString(): string;
 
-export = widestLine;
+export = uniqueString;

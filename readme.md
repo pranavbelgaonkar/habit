@@ -1,32 +1,30 @@
-# widest-line [![Build Status](https://travis-ci.org/sindresorhus/widest-line.svg?branch=master)](https://travis-ci.org/sindresorhus/widest-line)
+# unique-string [![Build Status](https://travis-ci.org/sindresorhus/unique-string.svg?branch=master)](https://travis-ci.org/sindresorhus/unique-string)
 
-> Get the visual width of the widest line in a string - the number of columns required to display it
-
-Some Unicode characters are [fullwidth](https://en.wikipedia.org/wiki/Halfwidth_and_fullwidth_forms) and use double the normal width. [ANSI escape codes](http://en.wikipedia.org/wiki/ANSI_escape_code) are stripped and doesn't affect the width.
-
-Useful to be able to know the maximum width a string will take up in the terminal.
+> Generate a unique random string
 
 
 ## Install
 
 ```
-$ npm install widest-line
+$ npm install unique-string
 ```
 
 
 ## Usage
 
 ```js
-const widestLine = require('widest-line');
+const uniqueString = require('unique-string');
 
-widestLine('古\n\u001B[1m@\u001B[22m');
-//=> 2
+uniqueString();
+//=> 'b4de2a49c8ffa3fbee04446f045483b2'
 ```
 
 
-## Related
+## API
 
-- [string-width](https://github.com/sindresorhus/string-width) - Get the visual width of a string
+### uniqueString()
+
+Returns a 32 character unique string. Matches the length of MD5, which is [unique enough](https://stackoverflow.com/a/2444336/64949) for non-crypto purposes.
 
 
 ## License
