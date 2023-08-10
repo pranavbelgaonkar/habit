@@ -1,29 +1,35 @@
 {
-  "name": "wrappy",
-  "version": "1.0.2",
-  "description": "Callback wrapping utility",
-  "main": "wrappy.js",
-  "files": [
-    "wrappy.js"
-  ],
-  "directories": {
-    "test": "test"
-  },
-  "dependencies": {},
-  "devDependencies": {
-    "tap": "^2.3.1"
-  },
+  "name": "webidl-conversions",
+  "version": "7.0.0",
+  "description": "Implements the WebIDL algorithms for converting to and from JavaScript values",
+  "main": "lib/index.js",
   "scripts": {
-    "test": "tap --coverage test/*.js"
+    "lint": "eslint .",
+    "test": "mocha test/*.js",
+    "test-no-sab": "mocha --parallel --jobs 2 --require test/helpers/delete-sab.js test/*.js",
+    "coverage": "nyc mocha test/*.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/npm/wrappy"
+  "_scripts_comments": {
+    "test-no-sab": "Node.js internals are broken by deleting SharedArrayBuffer if you run tests on the main thread. Using Mocha's parallel mode avoids this."
   },
-  "author": "Isaac Z. Schlueter <i@izs.me> (http://blog.izs.me/)",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/npm/wrappy/issues"
+  "repository": "jsdom/webidl-conversions",
+  "keywords": [
+    "webidl",
+    "web",
+    "types"
+  ],
+  "files": [
+    "lib/"
+  ],
+  "author": "Domenic Denicola <d@domenic.me> (https://domenic.me/)",
+  "license": "BSD-2-Clause",
+  "devDependencies": {
+    "@domenic/eslint-config": "^1.3.0",
+    "eslint": "^7.32.0",
+    "mocha": "^9.1.1",
+    "nyc": "^15.1.0"
   },
-  "homepage": "https://github.com/npm/wrappy"
+  "engines": {
+    "node": ">=12"
+  }
 }

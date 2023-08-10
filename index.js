@@ -1,216 +1,450 @@
-'use strict';
-const stringWidth = require('string-width');
-const stripAnsi = require('strip-ansi');
-const ansiStyles = require('ansi-styles');
+"use strict";
 
-const ESCAPES = new Set([
-	'\u001B',
-	'\u009B'
-]);
+function makeException(ErrorType, message, options) {
+  if (options.globals) {
+    ErrorType = options.globals[ErrorType.name];
+  }
+  return new ErrorType(`${options.context ? options.context : "Value"} ${message}.`);
+}
 
-const END_CODE = 39;
+function toNumber(value, options) {
+  if (typeof value === "bigint") {
+    throw makeException(TypeError, "is a BigInt which cannot be converted to a number", options);
+  }
+  if (!options.globals) {
+    return Number(value);
+  }
+  return options.globals.Number(value);
+}
 
-const ANSI_ESCAPE_BELL = '\u0007';
-const ANSI_CSI = '[';
-const ANSI_OSC = ']';
-const ANSI_SGR_TERMINATOR = 'm';
-const ANSI_ESCAPE_LINK = `${ANSI_OSC}8;;`;
+// Round x to the nearest integer, choosing the even integer if it lies halfway between two.
+function evenRound(x) {
+  // There are four cases for numbers with fractional part being .5:
+  //
+  // case |     x     | floor(x) | round(x) | expected | x <> 0 | x % 1 | x & 1 |   example
+  //   1  |  2n + 0.5 |  2n      |  2n + 1  |  2n      |   >    |  0.5  |   0   |  0.5 ->  0
+  //   2  |  2n + 1.5 |  2n + 1  |  2n + 2  |  2n + 2  |   >    |  0.5  |   1   |  1.5 ->  2
+  //   3  | -2n - 0.5 | -2n - 1  | -2n      | -2n      |   <    | -0.5  |   0   | -0.5 ->  0
+  //   4  | -2n - 1.5 | -2n - 2  | -2n - 1  | -2n - 2  |   <    | -0.5  |   1   | -1.5 -> -2
+  // (where n is a non-negative integer)
+  //
+  // Branch here for cases 1 and 4
+  if ((x > 0 && (x % 1) === +0.5 && (x & 1) === 0) ||
+        (x < 0 && (x % 1) === -0.5 && (x & 1) === 1)) {
+    return censorNegativeZero(Math.floor(x));
+  }
 
-const wrapAnsi = code => `${ESCAPES.values().next().value}${ANSI_CSI}${code}${ANSI_SGR_TERMINATOR}`;
-const wrapAnsiHyperlink = uri => `${ESCAPES.values().next().value}${ANSI_ESCAPE_LINK}${uri}${ANSI_ESCAPE_BELL}`;
+  return censorNegativeZero(Math.round(x));
+}
 
-// Calculate the length of words split on ' ', ignoring
-// the extra characters added by ansi escape codes
-const wordLengths = string => string.split(' ').map(character => stringWidth(character));
+function integerPart(n) {
+  return censorNegativeZero(Math.trunc(n));
+}
 
-// Wrap a long word across multiple rows
-// Ansi escape codes do not count towards length
-const wrapWord = (rows, word, columns) => {
-	const characters = [...word];
+function sign(x) {
+  return x < 0 ? -1 : 1;
+}
 
-	let isInsideEscape = false;
-	let isInsideLinkEscape = false;
-	let visible = stringWidth(stripAnsi(rows[rows.length - 1]));
+function modulo(x, y) {
+  // https://tc39.github.io/ecma262/#eqn-modulo
+  // Note that http://stackoverflow.com/a/4467559/3191 does NOT work for large modulos
+  const signMightNotMatch = x % y;
+  if (sign(y) !== sign(signMightNotMatch)) {
+    return signMightNotMatch + y;
+  }
+  return signMightNotMatch;
+}
 
-	for (const [index, character] of characters.entries()) {
-		const characterLength = stringWidth(character);
+function censorNegativeZero(x) {
+  return x === 0 ? 0 : x;
+}
 
-		if (visible + characterLength <= columns) {
-			rows[rows.length - 1] += character;
-		} else {
-			rows.push(character);
-			visible = 0;
-		}
+function createIntegerConversion(bitLength, { unsigned }) {
+  let lowerBound, upperBound;
+  if (unsigned) {
+    lowerBound = 0;
+    upperBound = 2 ** bitLength - 1;
+  } else {
+    lowerBound = -(2 ** (bitLength - 1));
+    upperBound = 2 ** (bitLength - 1) - 1;
+  }
 
-		if (ESCAPES.has(character)) {
-			isInsideEscape = true;
-			isInsideLinkEscape = characters.slice(index + 1).join('').startsWith(ANSI_ESCAPE_LINK);
-		}
+  const twoToTheBitLength = 2 ** bitLength;
+  const twoToOneLessThanTheBitLength = 2 ** (bitLength - 1);
 
-		if (isInsideEscape) {
-			if (isInsideLinkEscape) {
-				if (character === ANSI_ESCAPE_BELL) {
-					isInsideEscape = false;
-					isInsideLinkEscape = false;
-				}
-			} else if (character === ANSI_SGR_TERMINATOR) {
-				isInsideEscape = false;
-			}
+  return (value, options = {}) => {
+    let x = toNumber(value, options);
+    x = censorNegativeZero(x);
 
-			continue;
-		}
+    if (options.enforceRange) {
+      if (!Number.isFinite(x)) {
+        throw makeException(TypeError, "is not a finite number", options);
+      }
 
-		visible += characterLength;
+      x = integerPart(x);
 
-		if (visible === columns && index < characters.length - 1) {
-			rows.push('');
-			visible = 0;
-		}
-	}
+      if (x < lowerBound || x > upperBound) {
+        throw makeException(
+          TypeError,
+          `is outside the accepted range of ${lowerBound} to ${upperBound}, inclusive`,
+          options
+        );
+      }
 
-	// It's possible that the last row we copy over is only
-	// ansi escape characters, handle this edge-case
-	if (!visible && rows[rows.length - 1].length > 0 && rows.length > 1) {
-		rows[rows.length - 2] += rows.pop();
-	}
+      return x;
+    }
+
+    if (!Number.isNaN(x) && options.clamp) {
+      x = Math.min(Math.max(x, lowerBound), upperBound);
+      x = evenRound(x);
+      return x;
+    }
+
+    if (!Number.isFinite(x) || x === 0) {
+      return 0;
+    }
+    x = integerPart(x);
+
+    // Math.pow(2, 64) is not accurately representable in JavaScript, so try to avoid these per-spec operations if
+    // possible. Hopefully it's an optimization for the non-64-bitLength cases too.
+    if (x >= lowerBound && x <= upperBound) {
+      return x;
+    }
+
+    // These will not work great for bitLength of 64, but oh well. See the README for more details.
+    x = modulo(x, twoToTheBitLength);
+    if (!unsigned && x >= twoToOneLessThanTheBitLength) {
+      return x - twoToTheBitLength;
+    }
+    return x;
+  };
+}
+
+function createLongLongConversion(bitLength, { unsigned }) {
+  const upperBound = Number.MAX_SAFE_INTEGER;
+  const lowerBound = unsigned ? 0 : Number.MIN_SAFE_INTEGER;
+  const asBigIntN = unsigned ? BigInt.asUintN : BigInt.asIntN;
+
+  return (value, options = {}) => {
+    let x = toNumber(value, options);
+    x = censorNegativeZero(x);
+
+    if (options.enforceRange) {
+      if (!Number.isFinite(x)) {
+        throw makeException(TypeError, "is not a finite number", options);
+      }
+
+      x = integerPart(x);
+
+      if (x < lowerBound || x > upperBound) {
+        throw makeException(
+          TypeError,
+          `is outside the accepted range of ${lowerBound} to ${upperBound}, inclusive`,
+          options
+        );
+      }
+
+      return x;
+    }
+
+    if (!Number.isNaN(x) && options.clamp) {
+      x = Math.min(Math.max(x, lowerBound), upperBound);
+      x = evenRound(x);
+      return x;
+    }
+
+    if (!Number.isFinite(x) || x === 0) {
+      return 0;
+    }
+
+    let xBigInt = BigInt(integerPart(x));
+    xBigInt = asBigIntN(bitLength, xBigInt);
+    return Number(xBigInt);
+  };
+}
+
+exports.any = value => {
+  return value;
 };
 
-// Trims spaces from a string ignoring invisible sequences
-const stringVisibleTrimSpacesRight = string => {
-	const words = string.split(' ');
-	let last = words.length;
-
-	while (last > 0) {
-		if (stringWidth(words[last - 1]) > 0) {
-			break;
-		}
-
-		last--;
-	}
-
-	if (last === words.length) {
-		return string;
-	}
-
-	return words.slice(0, last).join(' ') + words.slice(last).join('');
+exports.undefined = () => {
+  return undefined;
 };
 
-// The wrap-ansi module can be invoked in either 'hard' or 'soft' wrap mode
+exports.boolean = value => {
+  return Boolean(value);
+};
+
+exports.byte = createIntegerConversion(8, { unsigned: false });
+exports.octet = createIntegerConversion(8, { unsigned: true });
+
+exports.short = createIntegerConversion(16, { unsigned: false });
+exports["unsigned short"] = createIntegerConversion(16, { unsigned: true });
+
+exports.long = createIntegerConversion(32, { unsigned: false });
+exports["unsigned long"] = createIntegerConversion(32, { unsigned: true });
+
+exports["long long"] = createLongLongConversion(64, { unsigned: false });
+exports["unsigned long long"] = createLongLongConversion(64, { unsigned: true });
+
+exports.double = (value, options = {}) => {
+  const x = toNumber(value, options);
+
+  if (!Number.isFinite(x)) {
+    throw makeException(TypeError, "is not a finite floating-point value", options);
+  }
+
+  return x;
+};
+
+exports["unrestricted double"] = (value, options = {}) => {
+  const x = toNumber(value, options);
+
+  return x;
+};
+
+exports.float = (value, options = {}) => {
+  const x = toNumber(value, options);
+
+  if (!Number.isFinite(x)) {
+    throw makeException(TypeError, "is not a finite floating-point value", options);
+  }
+
+  if (Object.is(x, -0)) {
+    return x;
+  }
+
+  const y = Math.fround(x);
+
+  if (!Number.isFinite(y)) {
+    throw makeException(TypeError, "is outside the range of a single-precision floating-point value", options);
+  }
+
+  return y;
+};
+
+exports["unrestricted float"] = (value, options = {}) => {
+  const x = toNumber(value, options);
+
+  if (isNaN(x)) {
+    return x;
+  }
+
+  if (Object.is(x, -0)) {
+    return x;
+  }
+
+  return Math.fround(x);
+};
+
+exports.DOMString = (value, options = {}) => {
+  if (options.treatNullAsEmptyString && value === null) {
+    return "";
+  }
+
+  if (typeof value === "symbol") {
+    throw makeException(TypeError, "is a symbol, which cannot be converted to a string", options);
+  }
+
+  const StringCtor = options.globals ? options.globals.String : String;
+  return StringCtor(value);
+};
+
+exports.ByteString = (value, options = {}) => {
+  const x = exports.DOMString(value, options);
+  let c;
+  for (let i = 0; (c = x.codePointAt(i)) !== undefined; ++i) {
+    if (c > 255) {
+      throw makeException(TypeError, "is not a valid ByteString", options);
+    }
+  }
+
+  return x;
+};
+
+exports.USVString = (value, options = {}) => {
+  const S = exports.DOMString(value, options);
+  const n = S.length;
+  const U = [];
+  for (let i = 0; i < n; ++i) {
+    const c = S.charCodeAt(i);
+    if (c < 0xD800 || c > 0xDFFF) {
+      U.push(String.fromCodePoint(c));
+    } else if (0xDC00 <= c && c <= 0xDFFF) {
+      U.push(String.fromCodePoint(0xFFFD));
+    } else if (i === n - 1) {
+      U.push(String.fromCodePoint(0xFFFD));
+    } else {
+      const d = S.charCodeAt(i + 1);
+      if (0xDC00 <= d && d <= 0xDFFF) {
+        const a = c & 0x3FF;
+        const b = d & 0x3FF;
+        U.push(String.fromCodePoint((2 << 15) + ((2 << 9) * a) + b));
+        ++i;
+      } else {
+        U.push(String.fromCodePoint(0xFFFD));
+      }
+    }
+  }
+
+  return U.join("");
+};
+
+exports.object = (value, options = {}) => {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    throw makeException(TypeError, "is not an object", options);
+  }
+
+  return value;
+};
+
+const abByteLengthGetter =
+    Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+const sabByteLengthGetter =
+    typeof SharedArrayBuffer === "function" ?
+      Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength").get :
+      null;
+
+function isNonSharedArrayBuffer(value) {
+  try {
+    // This will throw on SharedArrayBuffers, but not detached ArrayBuffers.
+    // (The spec says it should throw, but the spec conflicts with implementations: https://github.com/tc39/ecma262/issues/678)
+    abByteLengthGetter.call(value);
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSharedArrayBuffer(value) {
+  try {
+    sabByteLengthGetter.call(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isArrayBufferDetached(value) {
+  try {
+    // eslint-disable-next-line no-new
+    new Uint8Array(value);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+exports.ArrayBuffer = (value, options = {}) => {
+  if (!isNonSharedArrayBuffer(value)) {
+    if (options.allowShared && !isSharedArrayBuffer(value)) {
+      throw makeException(TypeError, "is not an ArrayBuffer or SharedArrayBuffer", options);
+    }
+    throw makeException(TypeError, "is not an ArrayBuffer", options);
+  }
+  if (isArrayBufferDetached(value)) {
+    throw makeException(TypeError, "is a detached ArrayBuffer", options);
+  }
+
+  return value;
+};
+
+const dvByteLengthGetter =
+    Object.getOwnPropertyDescriptor(DataView.prototype, "byteLength").get;
+exports.DataView = (value, options = {}) => {
+  try {
+    dvByteLengthGetter.call(value);
+  } catch (e) {
+    throw makeException(TypeError, "is not a DataView", options);
+  }
+
+  if (!options.allowShared && isSharedArrayBuffer(value.buffer)) {
+    throw makeException(TypeError, "is backed by a SharedArrayBuffer, which is not allowed", options);
+  }
+  if (isArrayBufferDetached(value.buffer)) {
+    throw makeException(TypeError, "is backed by a detached ArrayBuffer", options);
+  }
+
+  return value;
+};
+
+// Returns the unforgeable `TypedArray` constructor name or `undefined`,
+// if the `this` value isn't a valid `TypedArray` object.
 //
-// 'hard' will never allow a string to take up more than columns characters
-//
-// 'soft' allows long words to expand past the column length
-const exec = (string, columns, options = {}) => {
-	if (options.trim !== false && string.trim() === '') {
-		return '';
-	}
+// https://tc39.es/ecma262/#sec-get-%typedarray%.prototype-@@tostringtag
+const typedArrayNameGetter = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array).prototype,
+  Symbol.toStringTag
+).get;
+[
+  Int8Array,
+  Int16Array,
+  Int32Array,
+  Uint8Array,
+  Uint16Array,
+  Uint32Array,
+  Uint8ClampedArray,
+  Float32Array,
+  Float64Array
+].forEach(func => {
+  const { name } = func;
+  const article = /^[AEIOU]/u.test(name) ? "an" : "a";
+  exports[name] = (value, options = {}) => {
+    if (!ArrayBuffer.isView(value) || typedArrayNameGetter.call(value) !== name) {
+      throw makeException(TypeError, `is not ${article} ${name} object`, options);
+    }
+    if (!options.allowShared && isSharedArrayBuffer(value.buffer)) {
+      throw makeException(TypeError, "is a view on a SharedArrayBuffer, which is not allowed", options);
+    }
+    if (isArrayBufferDetached(value.buffer)) {
+      throw makeException(TypeError, "is a view on a detached ArrayBuffer", options);
+    }
 
-	let returnValue = '';
-	let escapeCode;
-	let escapeUrl;
+    return value;
+  };
+});
 
-	const lengths = wordLengths(string);
-	let rows = [''];
+// Common definitions
 
-	for (const [index, word] of string.split(' ').entries()) {
-		if (options.trim !== false) {
-			rows[rows.length - 1] = rows[rows.length - 1].trimStart();
-		}
+exports.ArrayBufferView = (value, options = {}) => {
+  if (!ArrayBuffer.isView(value)) {
+    throw makeException(TypeError, "is not a view on an ArrayBuffer or SharedArrayBuffer", options);
+  }
 
-		let rowLength = stringWidth(rows[rows.length - 1]);
+  if (!options.allowShared && isSharedArrayBuffer(value.buffer)) {
+    throw makeException(TypeError, "is a view on a SharedArrayBuffer, which is not allowed", options);
+  }
 
-		if (index !== 0) {
-			if (rowLength >= columns && (options.wordWrap === false || options.trim === false)) {
-				// If we start with a new word but the current row length equals the length of the columns, add a new row
-				rows.push('');
-				rowLength = 0;
-			}
-
-			if (rowLength > 0 || options.trim === false) {
-				rows[rows.length - 1] += ' ';
-				rowLength++;
-			}
-		}
-
-		// In 'hard' wrap mode, the length of a line is never allowed to extend past 'columns'
-		if (options.hard && lengths[index] > columns) {
-			const remainingColumns = (columns - rowLength);
-			const breaksStartingThisLine = 1 + Math.floor((lengths[index] - remainingColumns - 1) / columns);
-			const breaksStartingNextLine = Math.floor((lengths[index] - 1) / columns);
-			if (breaksStartingNextLine < breaksStartingThisLine) {
-				rows.push('');
-			}
-
-			wrapWord(rows, word, columns);
-			continue;
-		}
-
-		if (rowLength + lengths[index] > columns && rowLength > 0 && lengths[index] > 0) {
-			if (options.wordWrap === false && rowLength < columns) {
-				wrapWord(rows, word, columns);
-				continue;
-			}
-
-			rows.push('');
-		}
-
-		if (rowLength + lengths[index] > columns && options.wordWrap === false) {
-			wrapWord(rows, word, columns);
-			continue;
-		}
-
-		rows[rows.length - 1] += word;
-	}
-
-	if (options.trim !== false) {
-		rows = rows.map(stringVisibleTrimSpacesRight);
-	}
-
-	const pre = [...rows.join('\n')];
-
-	for (const [index, character] of pre.entries()) {
-		returnValue += character;
-
-		if (ESCAPES.has(character)) {
-			const {groups} = new RegExp(`(?:\\${ANSI_CSI}(?<code>\\d+)m|\\${ANSI_ESCAPE_LINK}(?<uri>.*)${ANSI_ESCAPE_BELL})`).exec(pre.slice(index).join('')) || {groups: {}};
-			if (groups.code !== undefined) {
-				const code = Number.parseFloat(groups.code);
-				escapeCode = code === END_CODE ? undefined : code;
-			} else if (groups.uri !== undefined) {
-				escapeUrl = groups.uri.length === 0 ? undefined : groups.uri;
-			}
-		}
-
-		const code = ansiStyles.codes.get(Number(escapeCode));
-
-		if (pre[index + 1] === '\n') {
-			if (escapeUrl) {
-				returnValue += wrapAnsiHyperlink('');
-			}
-
-			if (escapeCode && code) {
-				returnValue += wrapAnsi(code);
-			}
-		} else if (character === '\n') {
-			if (escapeCode && code) {
-				returnValue += wrapAnsi(escapeCode);
-			}
-
-			if (escapeUrl) {
-				returnValue += wrapAnsiHyperlink(escapeUrl);
-			}
-		}
-	}
-
-	return returnValue;
+  if (isArrayBufferDetached(value.buffer)) {
+    throw makeException(TypeError, "is a view on a detached ArrayBuffer", options);
+  }
+  return value;
 };
 
-// For each newline, invoke the method separately
-module.exports = (string, columns, options) => {
-	return String(string)
-		.normalize()
-		.replace(/\r\n/g, '\n')
-		.split('\n')
-		.map(line => exec(line, columns, options))
-		.join('\n');
+exports.BufferSource = (value, options = {}) => {
+  if (ArrayBuffer.isView(value)) {
+    if (!options.allowShared && isSharedArrayBuffer(value.buffer)) {
+      throw makeException(TypeError, "is a view on a SharedArrayBuffer, which is not allowed", options);
+    }
+
+    if (isArrayBufferDetached(value.buffer)) {
+      throw makeException(TypeError, "is a view on a detached ArrayBuffer", options);
+    }
+    return value;
+  }
+
+  if (!options.allowShared && !isNonSharedArrayBuffer(value)) {
+    throw makeException(TypeError, "is not an ArrayBuffer or a view on one", options);
+  }
+  if (options.allowShared && !isSharedArrayBuffer(value) && !isNonSharedArrayBuffer(value)) {
+    throw makeException(TypeError, "is not an ArrayBuffer, SharedArrayBuffer, or a view on one", options);
+  }
+  if (isArrayBufferDetached(value)) {
+    throw makeException(TypeError, "is a detached ArrayBuffer", options);
+  }
+
+  return value;
 };
+
+exports.DOMTimeStamp = exports["unsigned long long"];
